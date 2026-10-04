@@ -1,0 +1,14 @@
+# Ambiente
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+credentials/
+token.json
+
+# IDE
+.vscode/
+.idea/
