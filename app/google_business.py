@@ -1,3 +1,7 @@
+import json
+import logging
+import os
+import time
 from pathlib import Path
 
 import requests
@@ -11,6 +15,7 @@ SCOPES = [
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TOKEN_FILE = BASE_DIR / "token.json"
+TOKEN_ENV_VAR = "GOOGLE_TOKEN_JSON"
 
 ACCOUNT_ID = "109953788990608851050"
 LOCATION_ID = "6193849696396283535"
@@ -27,20 +32,39 @@ REVIEWS_API = (
     "https://mybusiness.googleapis.com/v4"
 )
 
+# Erros temporários: limite de uso e indisponibilidade do servidor.
+RETRY_STATUS = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 4
+RETRY_BASE_WAIT = 5  # segundos; dobra a cada tentativa (5, 10, 20)
+REQUEST_TIMEOUT = 30  # segundos
+
+log = logging.getLogger("vica")
+
 
 def get_credentials():
-    credentials = Credentials.from_authorized_user_file(
-        TOKEN_FILE,
-        SCOPES
-    )
+    # Na nuvem o token vem da variável de ambiente (segredo do ambiente);
+    # no computador, do arquivo token.json.
+    token_json = os.environ.get(TOKEN_ENV_VAR)
+
+    if token_json:
+        credentials = Credentials.from_authorized_user_info(
+            json.loads(token_json),
+            SCOPES
+        )
+    else:
+        credentials = Credentials.from_authorized_user_file(
+            TOKEN_FILE,
+            SCOPES
+        )
 
     if credentials.expired and credentials.refresh_token:
         credentials.refresh(Request())
 
-        TOKEN_FILE.write_text(
-            credentials.to_json(),
-            encoding="utf-8"
-        )
+        if not token_json:
+            TOKEN_FILE.write_text(
+                credentials.to_json(),
+                encoding="utf-8"
+            )
 
     return credentials
 
@@ -55,15 +79,39 @@ def get_headers():
 
 
 def get(url, params=None):
-    response = requests.get(
-        url,
-        headers=get_headers(),
-        params=params,
-    )
+    """GET com novas tentativas para falhas temporárias do Google.
 
-    response.raise_for_status()
+    Só leituras são repetidas; a publicação (PUT) não passa por aqui.
+    """
 
-    return response.json()
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(
+                url,
+                headers=get_headers(),
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except (requests.ConnectionError, requests.Timeout) as error:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            reason = f"falha de conexão ({error.__class__.__name__})"
+        else:
+            if (
+                response.status_code not in RETRY_STATUS
+                or attempt == MAX_ATTEMPTS
+            ):
+                response.raise_for_status()
+                return response.json()
+            reason = f"HTTP {response.status_code}"
+
+        wait = RETRY_BASE_WAIT * 2 ** (attempt - 1)
+        log.warning(
+            f"Google respondeu com {reason} "
+            f"(tentativa {attempt} de {MAX_ATTEMPTS}). "
+            f"Nova tentativa em {wait} s."
+        )
+        time.sleep(wait)
 
 
 def get_accounts():

@@ -9,6 +9,10 @@ __pycache__/
 credentials/
 token.json
 
+# Logs
+logs/
+*.log
+
 # IDE
 .vscode/
 .idea/
